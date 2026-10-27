@@ -1,0 +1,42 @@
+# NOTE: in .gitignore a '#' only starts a comment at the beginning of a line.
+#       Never put a comment after a pattern on the same line.
+
+# ---- Per-user / local-only files -------------------------------------------------
+# each person's own copy (made from env.sh.example); may hold paths/tokens
+env.sh
+
+# ---- Old experiments and legacy scripts kept on Sol but not shared ---------------
+# Step 0 baseline eval results
+eval_step0/
+# output of an earlier script version
+step2/
+# superseded by run_smolva.py
+hazard_env.py
+# scene-dump helper, not used at runtime
+make_scene_xml.py
+# Korean-comment backups of the scripts
+*_korean.py
+
+# ---- Python ------------------------------------------------------------------------
+__pycache__/
+*.pyc
+*.pyo
+.ipynb_checkpoints/
+
+# ---- Large artifacts: never commit, re-downloadable or regenerable ---------------
+# model weights
+*.safetensors
+*.pt
+*.pth
+*.ckpt
+# LIBERO datasets
+*.hdf5
+*.h5
+# experiment-tracking dirs
+wandb/
+outputs/
+
+# ---- Editor / OS noise ---------------------------------------------------------------
+.vscode/
+.idea/
+.DS_Store

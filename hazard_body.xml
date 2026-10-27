@@ -1,0 +1,4 @@
+<body name="hazard" mocap="true" pos="0.5 -0.6 1.0">
+  <geom name="hazard_geom" type="sphere" size="0.04"
+        rgba="1 0 0 1" contype="1" conaffinity="1" group="3"/>
+</body>
