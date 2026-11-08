@@ -40,3 +40,14 @@ outputs/
 .vscode/
 .idea/
 .DS_Store
+
+# experiment outputs (regenerate with the scripts; do not commit)
+logs/
+profile_*/
+async_*/
+sync_run/
+base/
+step3/
+sweep/
+d5_r*/
+EOF

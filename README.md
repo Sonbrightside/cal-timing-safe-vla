@@ -27,13 +27,15 @@ Planned comparison (not all implemented yet):
 
 ## Repository layout
 
-Only three files are needed to run anything:
+Scripts you run:
 
 | Path | What it is |
 |---|---|
 | `run_smolva.py` | **Main entry point.** Loads a LIBERO task via `OffScreenRenderEnv`, injects the moving hazard into the scene XML (reads `hazard_body.xml`), runs SmolVLA on it, and writes `log.csv` + two mp4 files |
+| `profile_smolvla.py` | **Timing profile, no hazard.** Same policy / env / obs-conversion code as `run_smolva.py`, but no hazard, no local sensor, no video. Records wall-clock time of every pipeline stage per step and the inference-latency distribution. This is where the injected delivery delay `D` comes from. See "Timing profile" under Running |
+| `job_profile.sh` | SLURM batch script that runs `profile_smolvla.py` on all 10 `libero_goal` tasks inside **one** job (same node, same GPU) |
 | `diag_render.py` | Rendering check. Builds the same hazard scene and renders one frame each through MuJoCo and robosuite. Run this first on a new machine — if it fails, the problem is EGL/GPU, not our code |
-| `hazard_body.xml` | MuJoCo `<body>` definition of the moving hazard. Both scripts above splice this into LIBERO's scene XML right before `</worldbody>` |
+| `hazard_body.xml` | MuJoCo `<body>` definition of the moving hazard. `run_smolva.py` and `diag_render.py` splice this into LIBERO's scene XML right before `</worldbody>` |
 
 Everything else is results or reference material:
 
@@ -248,12 +250,70 @@ Outputs in the chosen folder:
 
 The console also prints when each new chunk is inferred and the min distance / contact count at the end.
 
+### Timing profile (no hazard): `profile_smolvla.py`
+
+Measures the wall-clock time of each SmolVLA inference call while the policy runs plain
+LIBERO episodes in sync mode (sim frozen during inference, exactly like `run_smolva.py`).
+No hazard, no local sensor, no video — video encoding would pollute the timing.
+
+```bash
+# on a GPU node, after `source env.sh`
+python profile_smolvla.py <out_dir> <task_id>
+python profile_smolvla.py profile_sg048/task3 3      # e.g. task 3, output under ./profile_sg048/task3/
+```
+
+- `<out_dir>` is created under the script directory; nested paths are fine.
+- `<task_id>` is a `libero_goal` task index (0–9). Defaults to 1 if omitted.
+- Other settings are constants at the top of the file: `N_EPISODES = 20`, `MAX_STEPS = 300`,
+  `WARMUP_CHUNKS = 2` (the first 2 inference calls are excluded from the summary — CUDA warm-up).
+
+Outputs in `<out_dir>`:
+
+| File | Contents |
+|---|---|
+| `chunks.csv` | one row per inference call: `t_pre_ms` (obs → batch, incl. move to GPU), `t_inf_ms` (pure `predict_action_chunk`, GPU-synchronized) |
+| `steps.csv` | one row per sim step: all stage timings, index in chunk, plan age in steps |
+| `summary.json` | `node`, `gpu`, `gpu_sms` (SM count — full A100 = 108, MIG slice fewer), torch version, task, `t_inf_ms` p50/p95/p99/max, `t_inf_in_steps_p99` = ceil(p99 / 50 ms) (the value used as `D`), sync success rate |
+
+**All tasks on one node (Sol).** `job_profile.sh` loops over tasks 0–9 inside one SLURM job, so
+every task is measured on the same node and GPU and task-to-task differences are not confounded
+with node differences:
+
+```bash
+sbatch job_profile.sh        # submit 2–3 times to sample different nodes
+squeue -u $USER              # NODELIST: each submission should land on a different node
+```
+
+Output goes to `profile_<jobid>/task<N>/`, console log to `logs/prof_<jobid>.out`.
+**One folder = one node, one subfolder = one task.**
+
+**Jetson (Orin Nano / Orin AGX).** The script needs no changes. Setup steps 1–4 apply as
+written, with these differences:
+
+1. Use the JetPack build of PyTorch (ARM + CUDA); the pip wheel will not work. Check
+   `torch.cuda.is_available()` before installing lerobot.
+2. The Jetson has internet, so download the checkpoint directly on it (`hf download lerobot/smolvla_libero`
+   after `source env.sh`). The script still runs with `HF_HUB_OFFLINE=1`, so this must happen first.
+3. `env.sh`: point `HF_HOME` at a disk with ≥ 2 GB free (not `/scratch` — that is a Sol path); keep `MUJOCO_GL=egl`,
+   fall back to `osmesa` if EGL fails. Run `python diag_render.py` to check rendering.
+4. Smoke test first: set `N_EPISODES = 2` in the file, run `python profile_smolvla.py jetson_test 1`,
+   and check `summary.json` has `gpu_sms` = 16 (Orin AGX) or 8 (Orin Nano).
+5. Full run: `N_EPISODES = 20`, loop tasks 0–9 (same `for` loop as in `job_profile.sh`, without the `#SBATCH` lines).
+   Expect it to be much slower than on Sol — inference is 5–10× longer and MuJoCo renders on the CPU.
+6. **Record the power mode and clock state next to the results**: `sudo nvpmodel -q` and whether
+   `jetson_clocks` was on. Inference time on Jetson depends strongly on both.
+
+**Reading the results.** Compare `t_inf_ms` across tasks on one node first (SmolVLA pads the
+instruction to a fixed length and uses fixed image sizes, so task-to-task variation is expected
+to be small), then across nodes/devices — that is the variability `D` has to absorb. Do not merge
+runs with different `gpu_sms` or power modes into one distribution.
+
 ## Status / next steps
 
 - [x] Step 0: SmolVLA runs on LIBERO on Sol, baseline success rates recorded (results not in repo)
 - [x] Moving hazard inserted into the LIBERO scene
 - [x] Hazard-scene rollouts with per-step logging (`test_examples/`)
-- [ ] Measure pipeline timing (sensing / inference / control) distribution
+- [ ] Measure pipeline timing (sensing / inference / control) distribution — `profile_smolvla.py` done; Sol multi-node and Jetson runs in progress
 - [ ] Derive and implement `B(d, v)` + deadline check
 - [ ] Four-way comparison (fixed vs state-dependent vs handoff vs MPPI fallback)
 - [ ] Test generation / falsification with psy-taliro
@@ -262,4 +322,5 @@ The console also prints when each new chunk is inferred and the min distance / c
 ## Notes
 
 - Large artifacts (model checkpoints, LIBERO datasets, big video sets) are **not** committed. See `.gitignore`.
+  This includes `profile_*/` and `logs/` — `steps.csv` is ~6,000 rows per task.
 - Do not commit tokens. `env.sh` should reference `HF_TOKEN` etc. from your shell, not contain them.
